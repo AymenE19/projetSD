@@ -45,8 +45,3 @@ def extract_text_from_pdf(pdf_path):
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
             print(f"Deleted temporary PDF: {pdf_path}")
-
-
-
-
-
