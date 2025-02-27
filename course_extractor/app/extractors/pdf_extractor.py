@@ -1,6 +1,6 @@
 import os
 import requests
-import fitz  # PyMuPDF
+import fitz
 
 def download_pdf(url, output_dir="temp_downloads"):
     """Download a PDF from a URL and save it to a temporary directory."""

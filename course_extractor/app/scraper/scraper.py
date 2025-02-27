@@ -16,22 +16,29 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-from course_extractor.app.storage.database import AtlasClient
-from course_extractor.app.utils.files import sanitize_filename, ensure_directory_exists, rename_file
-from course_extractor.app.utils.logging import log_message
-from course_extractor.app.utils.urls import parameterized_url_generator
+from AutoRevise.course_extractor.app.storage.database import AtlasClient
+from AutoRevise.course_extractor.app.utils.files import sanitize_filename, ensure_directory_exists, rename_file
+from AutoRevise.course_extractor.app.utils.logging import log_message
+from AutoRevise.course_extractor.app.utils.urls import parameterized_url_generator
+
+from AutoRevise.course_extractor.app.storage.models import CourseDocument
 
 # Defining global variables and constants ______________________________________________________________________________
 load_dotenv()  # take environment variables from .env
 
 # Scribd API
-API_BASE_URL = "https://www.scribd.com/search/query"
-MAX_PARSABLE_PAGES = 5
-MAX_SAVED_RESULTS = 50
-SEARCH_TERM = "cours de python"  # TODO: Change the search term according to our needs
-LANGS = ["5"]  # 5 for French
-FILE_TYPES = ["pdf"]
-FILE_LENGTH = "1-3"  # Available options are "1-3", "4-100" or "100+"
+SCRIBD_SEARCH_TERM = input("Write the desired search term (i.e. Cours de java) : ")
+SCRIBD_API_BASE_URL = "https://www.scribd.com/search/query"
+SCRIBD_MAX_PARSABLE_PAGES = int(os.getenv("SCRIBD_MAX_PARSABLE_PAGES"))
+SCRIBD_MAX_SAVED_RESULTS = int(os.getenv("SCRIBD_MAX_SAVED_RESULTS"))
+SCRIBD_LANGS = os.getenv("SCRIBD_LANGS").split(",")
+SCRIBD_FILE_CATEGORY = os.getenv("SCRIBD_FILE_CATEGORY").split(",")
+
+SCRIBD_FILE_TYPES = os.getenv("SCRIBD_FILE_TYPES").split(",")
+
+SCRIBD_PREFERRED_FILE_LENGTH = os.getenv("SCRIBD_PREFERRED_FILE_LENGTH")
+SCRIBD_MIN_FILE_LENGTH = int(os.getenv("SCRIBD_MIN_FILE_LENGTH"))
+SCRIBD_MAX_FILE_LENGTH = int(os.getenv("SCRIBD_MAX_FILE_LENGTH"))
 
 # Mongodb SetUp
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -40,7 +47,7 @@ MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME")
 mongodb_client = AtlasClient(MONGODB_URI, MONGODB_DB_NAME)
 
 # Check the download folder
-DOWNLOAD_PATH = os.path.join(os.getenv("DOWNLOAD_PATH"), sanitize_filename(SEARCH_TERM))
+DOWNLOAD_PATH = os.path.join(os.getenv("DOWNLOAD_PATH"), sanitize_filename(SCRIBD_SEARCH_TERM))
 ensure_directory_exists(DOWNLOAD_PATH)
 
 # Set up Selenium WebDriver
@@ -61,8 +68,14 @@ def search_url_generator(search_term: str, page: int = 1):
     """Takes a search term and returns a URL with parameters"""
 
     return parameterized_url_generator(
-        API_BASE_URL, query=search_term, num_pages=FILE_LENGTH, language=LANGS, filetype=FILE_TYPES, page=page
+        SCRIBD_API_BASE_URL,
+        query=search_term,
+        num_pages=SCRIBD_PREFERRED_FILE_LENGTH,
+        language=SCRIBD_LANGS,
+        filetype=SCRIBD_FILE_TYPES,
+        page=page
     )
+
 
 
 def process_scribd_docs_response(response: Response):
@@ -71,19 +84,18 @@ def process_scribd_docs_response(response: Response):
     # Extract the list of documents data from the returned json response
     docs_data_list = json_response["results"]["documents"]["content"]["documents"]
 
-    # Reconstruct a new list that contains only the fields we want
+    # Reconstruct a new list that contains CourseDocument objects
     processed_docs_data = [
-        {
-            "_id": doc["id"],
-            "file_name": f"{doc["id"]}.pdf",
-            "file_path": os.path.join(sanitize_filename(SEARCH_TERM), f"{doc["id"]}.pdf"),
-            "file_type": "pdf",
-            "title": doc["title"],
-            "url": doc["reader_url"],
-            "pages": doc["pageCount"],
-            "views": doc["views"],
-            "creation_date": datetime.now(UTC)
-        } for doc in docs_data_list
+        CourseDocument(
+            doc_id=doc["id"],
+            file_name=f"{doc['id']}.pdf",
+            file_path=os.path.join(sanitize_filename(SCRIBD_SEARCH_TERM), f"{doc['id']}.pdf"),
+            file_type="pdf",
+            title=doc["title"],
+            url=doc["reader_url"],
+            pages=doc["pageCount"],
+            views=doc["views"]
+        ).to_dict() for doc in docs_data_list
     ]
 
     # Return the processed docs data list, the total number of parsable pages and the current API page
@@ -100,7 +112,9 @@ def pdf_downloader(doc_data: dict, chrome_driver: webdriver.Chrome):
         parameterized_url_generator(
             "https://ilide.info/docgeneratev2",
             fileurl=f"https://scribd.vdownloaders.com/pdownload/{_id}/{title}",
-            title=title, utm_source="scrfree", utm_medium="queue",
+            title=title,
+            utm_source="scrfree",
+            utm_medium="queue",
             utm_campaign="dl"
         )
     )
@@ -157,7 +171,11 @@ def scrap_data_and_download_pdfs():
 
         page_response = requests.get(
             parameterized_url_generator(
-                API_BASE_URL, query=SEARCH_TERM, num_pages=FILE_LENGTH, language=LANGS, filetype=FILE_TYPES,
+                SCRIBD_API_BASE_URL,
+                query=SCRIBD_SEARCH_TERM,
+                num_pages=SCRIBD_PREFERRED_FILE_LENGTH,
+                language=SCRIBD_LANGS,
+                filetype=SCRIBD_FILE_TYPES,
                 page=current_page
             )
         )
@@ -171,17 +189,17 @@ def scrap_data_and_download_pdfs():
 
         # Increment the page counter then check if all parsable pages are done
         current_page += 1
-        if pages_count is not None and (current_page > pages_count or current_page > MAX_PARSABLE_PAGES):
+        if pages_count is not None and (current_page > pages_count or current_page > SCRIBD_MAX_PARSABLE_PAGES):
             break
 
     # Sort the locally stored docs data by the views count of each document
     docs_data = sorted(docs_data, key=lambda doc: doc["pages"], reverse=True)
 
     # Drop the documents with less than 100 pages or more than 400 pages
-    docs_data = [doc for doc in docs_data if doc["pages"] <= 10]  # TODO: Change this back to between 100 and 400
+    docs_data = [doc for doc in docs_data if SCRIBD_MIN_FILE_LENGTH <= doc["pages"] <= SCRIBD_MAX_FILE_LENGTH]
 
-    # Keep less than MAX_SAVED_RESULTS results
-    docs_data = docs_data[:MAX_SAVED_RESULTS]
+    # Keep less than SCRIBD_MAX_SAVED_RESULTS results
+    docs_data = docs_data[:SCRIBD_MAX_SAVED_RESULTS]
 
     # Install the chrome driver if necessary then initiate it __________________________________________________________
     service = Service(ChromeDriverManager().install())
@@ -189,7 +207,7 @@ def scrap_data_and_download_pdfs():
 
     for idx, doc in enumerate(docs_data):
         # Log the start of the document downloading process
-        log_message(f"Start downloading PDF file and inserting data of document {idx + 1}/{len(docs_data)} : {doc['url']}")
+        log_message(f"Start of PDF file downloading & doc data inserting {idx+1}/{len(docs_data)}: {doc['url']}")
         start_time = time.time()
 
         pdf_downloader(doc, driver)
@@ -198,6 +216,6 @@ def scrap_data_and_download_pdfs():
         mongodb_client.insert_one(MONGODB_COLLECTION_NAME, doc, ignore_duplicates=True)
 
         elapsed_time = time.time() - start_time
-        log_message(f"End downloading PDF file and inserting data of document ({elapsed_time:.2f}s) {idx + 1}/{len(docs_data)}: {doc['url']}\n")
+        log_message(f"End of PDF file downloading & doc data inserting ({elapsed_time:.2f}s) {idx+1}/{len(docs_data)}: {doc['url']}\n")
 
     driver.quit()

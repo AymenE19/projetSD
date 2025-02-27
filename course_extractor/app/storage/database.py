@@ -1,7 +1,7 @@
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError, BulkWriteError
 
-from course_extractor.app.utils.logging import log_message
+from AutoRevise.course_extractor.app.utils.logging import log_message
 
 
 class AtlasClient:
